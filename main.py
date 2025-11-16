@@ -1,9 +1,8 @@
 import os
 import logging
-import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta
-
+from fastapi import FastAPI, Request
 from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
@@ -24,10 +23,9 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-PORT = int(os.getenv("PORT", 10000))
 
 if not all([BOT_TOKEN, OPENAI_API_KEY, WEBHOOK_URL]):
-    raise ValueError("Missing BOT_TOKEN, OPENAI_API_KEY, or WEBHOOK_URL!")
+    raise ValueError("Missing env vars!")
 
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
@@ -46,62 +44,55 @@ def is_rate_limited(user_id: int) -> bool:
     user_requests[user_id].append(now)
     return False
 
-# === AI RESPONSE WITH TIMEOUT & FAST PROMPT ===
+# === AI RESPONSE ===
 async def stream_response(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str, chat_id: int):
     if is_rate_limited(update.effective_user.id):
-        await update.message.reply_text("⏳ 3 messages / 30s", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("3 messages / 30s", parse_mode=ParseMode.MARKDOWN)
         return
 
     chat_memory[chat_id].append({"role": "user", "content": prompt})
     if len(chat_memory[chat_id]) > MAX_MEMORY:
         chat_memory[chat_id] = chat_memory[chat_id][-MAX_MEMORY:]
 
-    msg = await update.message.reply_text("🤖 Thinking...", parse_mode=ParseMode.MARKDOWN)
+    msg = await update.message.reply_text("Thinking...", parse_mode=ParseMode.MARKDOWN)
     full_response = ""
 
     try:
-        # 15-SECOND TIMEOUT + FAST PROMPT
-        stream = await asyncio.wait_for(
-            client.chat.completions.create(
-                model="gpt-4o-mini",
-                messages=[
-                    {"role": "system", "content": "You are fast. Reply in 1-2 sentences. Use bullet points if needed."}
-                ] + [{"role": m["role"], "content": m["content"]} for m in chat_memory[chat_id]],
-                stream=True,
-                temperature=0.7,
-            ),
-            timeout=15.0
+        stream = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "Fast. 1-2 sentences. Bullet points."}
+            ] + [{"role": m["role"], "content": m["content"]} for m in chat_memory[chat_id]],
+            stream=True,
+            temperature=0.7,
         )
 
         async for chunk in stream:
             if chunk.choices[0].delta.content:
                 full_response += chunk.choices[0].delta.content
                 if len(full_response) > 50:
-                    await msg.edit_text(f"🤖 {full_response}...", parse_mode=ParseMode.MARKDOWN)
+                    await msg.edit_text(f"{full_response}...", parse_mode=ParseMode.MARKDOWN)
 
-        await msg.edit_text(f"🤖 {full_response}", parse_mode=ParseMode.MARKDOWN)
+        await msg.edit_text(full_response, parse_mode=ParseMode.MARKDOWN)
         chat_memory[chat_id].append({"role": "assistant", "content": full_response})
 
-    except asyncio.TimeoutError:
-        await msg.edit_text("❌ OpenAI too slow. Try again.", parse_mode=ParseMode.MARKDOWN)
     except Exception as e:
-        logger.error(f"OpenAI error: {e}")
-        await msg.edit_text("❌ AI error. Try simpler question.", parse_mode=ParseMode.MARKDOWN)
+        logger.error(f"OpenAI: {e}")
+        await msg.edit_text("AI error.", parse_mode=ParseMode.MARKDOWN)
 
 # === HANDLERS ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "🤖 *ProHybrid AI v2*\n\n"
+        "*ProHybrid AI v2*\n\n"
         "• DM: full chat\n"
         "• Group: @me or /ask\n"
-        "• Free • Fast\n"
-        "• Made in 🇪🇹 Ethiopia",
+        "• Made in 🇪🇹",
         parse_mode=ParseMode.MARKDOWN
     )
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Use: `/ask hello`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("`/ask hi`", parse_mode=ParseMode.MARKDOWN)
         return
     await stream_response(update, context, " ".join(context.args), update.effective_chat.id)
 
@@ -119,27 +110,23 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if clean_text:
             await stream_response(update, context, clean_text, chat.id)
 
-# === APP SETUP ===
+# === FASTAPI APP ===
+app = FastAPI()
 application = Application.builder().token(BOT_TOKEN).build()
 
+# Add handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("ask", ask_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-async def post_init(application: Application) -> None:
-    await application.bot.set_my_commands([
-        BotCommand("start", "Start bot"),
-        BotCommand("ask", "Ask in group")
-    ])
-    logger.info("Commands set.")
+@app.post("/webhook")
+async def telegram_webhook(request: Request):
+    data = await request.json()
+    update = Update.de_json(data, application.bot)
+    await application.process_update(update)
+    return {"ok": True}
 
-application.post_init = post_init
-
-# === RUN WEBHOOK ===
-if __name__ == "__main__":
-    application.run_webhook(
-        listen="0.0.0.0",
-        port=PORT,
-        url_path=WEBHOOK_URL.split("/")[-1],
-        webhook_url=WEBHOOK_URL,
-    )
+@app.on_event("startup")
+async def on_startup():
+    await application.bot.set_webhook(url=WEBHOOK_URL)
+    logger.info(f"Webhook set: {WEBHOOK_URL}")
