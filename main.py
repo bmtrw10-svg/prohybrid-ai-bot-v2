@@ -15,7 +15,6 @@ from telegram.ext import (
 from telegram.constants import ParseMode
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
-import uvicorn
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
@@ -132,8 +131,6 @@ application.post_init = post_init
 async def main():
     await application.initialize()
     await application.start()
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook set: {WEBHOOK_URL}")
     await application.updater.start_webhook(
         listen="0.0.0.0",
         port=PORT,
@@ -141,7 +138,6 @@ async def main():
         webhook_url=WEBHOOK_URL,
     )
     logger.info(f"Server running on port {PORT}")
-    # Keep running
     await application.updater.idle()
 
 if __name__ == "__main__":
