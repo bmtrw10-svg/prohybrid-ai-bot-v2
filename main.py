@@ -127,18 +127,11 @@ async def post_init(application: Application) -> None:
 
 application.post_init = post_init
 
-# === WEBHOOK & SERVER ===
-async def main():
-    await application.initialize()
-    await application.start()
-    await application.updater.start_webhook(
+# === RUN WEBHOOK (v21 Official — No Updater, No Idle) ===
+if __name__ == "__main__":
+    application.run_webhook(
         listen="0.0.0.0",
         port=PORT,
         url_path=WEBHOOK_URL.split("/")[-1],
         webhook_url=WEBHOOK_URL,
     )
-    logger.info(f"Server running on port {PORT}")
-    await application.updater.idle()
-
-if __name__ == "__main__":
-    asyncio.run(main())
