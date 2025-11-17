@@ -16,6 +16,7 @@ from telegram.constants import ParseMode
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
+# === INIT ===
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -98,7 +99,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("`/ask hi`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("Use: `/ask hi`", parse_mode=ParseMode.MARKDOWN)
         return
     await stream_response(update, context, " ".join(context.args), update.effective_chat.id)
 
@@ -120,6 +121,7 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 app = FastAPI()
 application = Application.builder().token(BOT_TOKEN).build()
 
+# Add handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("ask", ask_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
@@ -133,5 +135,6 @@ async def webhook(request: Request):
 
 @app.on_event("startup")
 async def startup():
+    await application.initialize()  # ← FIXED: NO MORE RuntimeError
     await application.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook: {WEBHOOK_URL}")
+    logger.info(f"Webhook set: {WEBHOOK_URL}")
