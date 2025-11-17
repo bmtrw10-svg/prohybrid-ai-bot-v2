@@ -3,20 +3,13 @@ import logging
 import asyncio
 from collections import defaultdict
 from datetime import datetime, timedelta
-from fastapi import FastAPI, Request
+
 from telegram import Update, BotCommand
-from telegram.ext import (
-    Application,
-    ContextTypes,
-    MessageHandler,
-    CommandHandler,
-    filters,
-)
+from telegram.ext import Application, ContextTypes, MessageHandler, CommandHandler, filters
 from telegram.constants import ParseMode
 from openai import AsyncOpenAI
 from dotenv import load_dotenv
 
-# === INIT ===
 load_dotenv()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -25,9 +18,10 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+PORT = int(os.getenv("PORT", 10000))
 
 if not all([BOT_TOKEN, OPENAI_API_KEY, WEBHOOK_URL]):
-    raise ValueError("Missing BOT_TOKEN, OPENAI_API_KEY, or WEBHOOK_URL!")
+    raise ValueError("Missing env vars!")
 
 client = AsyncOpenAI(api_key=OPENAI_API_KEY)
 
@@ -46,7 +40,6 @@ def is_rate_limited(user_id: int) -> bool:
     user_requests[user_id].append(now)
     return False
 
-# === AI RESPONSE (FAST + 15s TIMEOUT) ===
 async def stream_response(update: Update, context: ContextTypes.DEFAULT_TYPE, prompt: str, chat_id: int):
     if is_rate_limited(update.effective_user.id):
         await update.message.reply_text("⏳ 3/30s", parse_mode=ParseMode.MARKDOWN)
@@ -99,7 +92,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ask_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not context.args:
-        await update.message.reply_text("Use: `/ask hi`", parse_mode=ParseMode.MARKDOWN)
+        await update.message.reply_text("`/ask hi`", parse_mode=ParseMode.MARKDOWN)
         return
     await stream_response(update, context, " ".join(context.args), update.effective_chat.id)
 
@@ -117,24 +110,26 @@ async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if clean_text:
             await stream_response(update, context, clean_text, chat.id)
 
-# === FASTAPI + PTB ===
-app = FastAPI()
+# === APP ===
 application = Application.builder().token(BOT_TOKEN).build()
 
-# Add handlers
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("ask", ask_command))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
 
-@app.post("/webhook")
-async def webhook(request: Request):
-    data = await request.json()
-    update = Update.de_json(data, application.bot)
-    await application.process_update(update)
-    return {"ok": True}
+async def post_init(application: Application):
+    await application.bot.set_my_commands([
+        BotCommand("start", "Start"),
+        BotCommand("ask", "Ask in group")
+    ])
 
-@app.on_event("startup")
-async def startup():
-    await application.initialize()  # ← FIXED: NO MORE RuntimeError
-    await application.bot.set_webhook(url=WEBHOOK_URL)
-    logger.info(f"Webhook set: {WEBHOOK_URL}")
+application.post_init = post_init
+
+# === MAIN ===
+if __name__ == "__main__":
+    application.run_webhook(
+        listen="0.0.0.0",
+        port=PORT,
+        url_path="/webhook",
+        webhook_url=WEBHOOK_URL
+    )
