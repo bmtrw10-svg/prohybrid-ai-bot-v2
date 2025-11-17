@@ -1,9 +1,26 @@
 import os, logging, aiohttp
 from collections import defaultdict
+from importlib import metadata
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 from dotenv import load_dotenv
 
+# --- safety checks for conflicting packages ---
+try:
+    metadata.version("telegram")
+    raise RuntimeError("Conflicting package 'telegram' is installed. Uninstall it (pip uninstall telegram).")
+except metadata.PackageNotFoundError:
+    pass
+
+try:
+    ptb_ver = metadata.version("python-telegram-bot")
+except metadata.PackageNotFoundError:
+    raise RuntimeError("python-telegram-bot not installed. Add it to requirements.txt")
+
+if int(ptb_ver.split(".")[0]) < 20:
+    raise RuntimeError(f"python-telegram-bot>=20 required (found {ptb_ver}). Pin to 20.x in requirements.txt")
+
+# --- normal bot code ---
 load_dotenv()
 logging.basicConfig(level=logging.WARNING)
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -65,5 +82,4 @@ def build_app():
 
 if __name__ == "__main__":
     app = build_app()
-    # run_webhook sets the webhook and starts an aiohttp server on the given path
     app.run_webhook(listen="0.0.0.0", port=PORT, webhook_path="/webhook", webhook_url=WEBHOOK_URL)
